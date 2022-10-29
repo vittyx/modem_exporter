@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adrianmo/go-nmea"
 	"github.com/maltegrosse/go-modemmanager"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -56,6 +57,27 @@ var (
 		modemlabels, nil,
 	)
 
+	//Aqui faltan parametros de rsrq The LTE RSRQ (Reference Signal Received Quality), in dB, given as a floating point value (signature "d").
+	// "snr" The LTE S/R ratio, in dB, given as a floating point value (signature "d").
+
+	rsrq = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, subsystem, "rsrq"),
+		"Reference Signal Received Quality",
+		modemlabels, nil,
+	)
+
+	snr = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, subsystem, "snr"),
+		"The LTE S/R ratio",
+		modemlabels, nil,
+	)
+
+	sinr = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, subsystem, "sinr"),
+		"Signal-to-interference-plus-noise ratio",
+		modemlabels, nil,
+	)
+
 	registered = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, subsystem, "registered"),
 		"Is the modem registered",
@@ -85,6 +107,30 @@ var (
 		"LAC currently used by the modem",
 		modemlabels, nil,
 	)
+	// GPS Metrics
+	lat = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, subsystem, "lat"),
+		"lat",
+		modemlabels, nil,
+	)
+
+	lon = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, subsystem, "lon"),
+		"Longitude",
+		modemlabels, nil,
+	)
+
+	alt = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, subsystem, "alt"),
+		"Altitude",
+		modemlabels, nil,
+	)
+
+	TimeFix = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, subsystem, "TimeFix"),
+		"Time To Fix",
+		modemlabels, nil,
+	)
 )
 
 type Exporter struct {
@@ -102,7 +148,16 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- operatorcode
 	ch <- rssi
 	ch <- rsrp
+	// New Signal metrics
+	ch <- snr
+	ch <- sinr
+	ch <- rsrq
 	ch <- roaming
+	// New GPS metrics
+	ch <- lat
+	ch <- lon
+	ch <- alt
+	ch <- TimeFix
 }
 
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
@@ -302,6 +357,52 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		} else {
 			log.Println(err)
 		}
+		for i := len(mloc.GpsNmea.NmeaSentences) - 1; i >= 0; i-- {
+			fmt.Println(" - Location GpsNmeaSentences: ", mloc.GpsNmea.NmeaSentences[i])
+			sentence := mloc.GpsNmea.NmeaSentences[i]
+			s, err := nmea.Parse(sentence)
+			if err != nil {
+				log.Fatal(err)
+			}
+			// Send GPS metrics only if the final GGA data is received.
+			if s.DataType() == nmea.TypeGGA {
+				m := s.(nmea.GGA)
+				fmt.Println("Raw sentence: ", m)
+				fmt.Println("Time: ", m.Time)
+				TFIX := mloc.GpsRaw.UtcTime
+				ch <- prometheus.MustNewConstMetric(
+					TimeFix, prometheus.GaugeValue, float64(TFIX.Unix()), imei, simIdent, simImsi, simOpIdent, simOp, opName, rat,
+				)
+
+				fmt.Println("Latitude GPS: ", nmea.FormatGPS(m.Latitude))
+
+				lAT := m.Latitude
+				ch <- prometheus.MustNewConstMetric(
+					lat, prometheus.GaugeValue, lAT, imei, simIdent, simImsi, simOpIdent, simOp, opName, rat,
+				)
+
+				fmt.Println("Latitude DMS: ", nmea.FormatDMS(m.Latitude))
+				fmt.Println("Longitude GPS: ", nmea.FormatGPS(m.Longitude))
+
+				lON := m.Longitude
+				ch <- prometheus.MustNewConstMetric(
+					lon, prometheus.GaugeValue, lON, imei, simIdent, simImsi, simOpIdent, simOp, opName, rat,
+				)
+
+				fmt.Println("Longitude DMS:  ", nmea.FormatDMS(m.Longitude))
+				fmt.Println("Altitude DMS:  ", nmea.FormatDMS(m.Altitude))
+
+				aLT := m.Altitude
+				ch <- prometheus.MustNewConstMetric(
+					alt, prometheus.GaugeValue, aLT, imei, simIdent, simImsi, simOpIdent, simOp, opName, rat,
+				)
+
+				fmt.Println("Altitude GPS: ", nmea.FormatGPS(m.Altitude))
+				fmt.Println("FixQuality GPS: ", m.FixQuality)
+
+			}
+
+		}
 
 		regState, err := modem3gpp.GetRegistrationState()
 		if err != nil {
@@ -359,6 +460,18 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(
 				rsrp, prometheus.GaugeValue, sp.Rsrp, imei, simIdent, simImsi, simOpIdent, simOp, opName, rat,
 			)
+			// New Signal metrics
+			ch <- prometheus.MustNewConstMetric(
+				snr, prometheus.GaugeValue, sp.Snr, imei, simIdent, simImsi, simOpIdent, simOp, opName, rat,
+			)
+
+			ch <- prometheus.MustNewConstMetric(
+				sinr, prometheus.GaugeValue, sp.Sinr, imei, simIdent, simImsi, simOpIdent, simOp, opName, rat,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				rsrq, prometheus.GaugeValue, sp.Rsrq, imei, simIdent, simImsi, simOpIdent, simOp, opName, rat,
+			)
+			//
 		}
 
 		err = modemSignal.Setup(0)
@@ -366,7 +479,6 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			log.Println(err)
 			continue
 		}
-
 	}
 
 }
